@@ -37,7 +37,7 @@ Every push to `main` builds both apps in GitHub Actions (**Actions › latest ru
 - `F-Locker-android` → `F-Locker.apk`
 - `F-Locker-windows-portable` → unzip and run `F-Locker.exe`
 
-Push a tag like `v1.0.0` to also publish them as a GitHub Release.
+Each successful build on `main` is also published under **Releases** (newest = latest).
 
 ## Build yourself
 

@@ -44,10 +44,6 @@ jobs:
         with:
           name: F-Locker-android
           path: F-Locker.apk
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: F-Locker.apk
 
   windows:
     name: Windows (portable .exe)
@@ -82,7 +78,26 @@ jobs:
         with:
           name: F-Locker-windows-portable
           path: F-Locker-windows-portable.zip
-      - if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+
+  release:
+    name: Publish download links
+    needs: [android, windows]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
         with:
-          files: F-Locker-windows-portable.zip
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: F-Locker 1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          body: |
+            - **F-Locker.apk** - install on Android (allow "install unknown apps").
+            - **F-Locker-windows-portable.zip** - unzip anywhere (USB too) and run F-Locker.exe. Nothing to install.
+          files: |
+            dist/F-Locker.apk
+            dist/F-Locker-windows-portable.zip
