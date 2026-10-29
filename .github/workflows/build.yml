@@ -1,0 +1,82 @@
+name: Build F-Locker
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Android (.apk)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Android project files
+        run: flutter create --org com.flocker --project-name f_locker --platforms=android .
+      - name: Configure Android app
+        run: bash tool/configure_android.sh
+      - run: flutter pub get
+      - name: Test encryption
+        run: flutter test
+      - name: Build APK
+        run: flutter build apk --release
+      - run: cp build/app/outputs/flutter-apk/app-release.apk F-Locker.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: F-Locker-android
+          path: F-Locker.apk
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: F-Locker.apk
+
+  windows:
+    name: Windows (portable .exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Create Windows project files
+        run: flutter create --org com.flocker --project-name f_locker --platforms=windows .
+      - name: Configure Windows app
+        shell: pwsh
+        run: ./tool/configure_windows.ps1
+      - run: flutter pub get
+      - name: Build EXE
+        run: flutter build windows --release
+      - name: Package portable folder
+        shell: pwsh
+        run: |
+          $out = "F-Locker"
+          Copy-Item -Recurse build/windows/x64/runner/Release $out
+          # Bundle the C++ runtime so F-Locker runs on any PC without installing anything.
+          foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            $src = Join-Path $env:WINDIR "System32\$dll"
+            if (Test-Path $src) { Copy-Item $src $out }
+          }
+          Copy-Item README-portable.txt "$out\README.txt"
+          Compress-Archive -Path "$out\*" -DestinationPath F-Locker-windows-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: F-Locker-windows-portable
+          path: F-Locker-windows-portable.zip
+      - if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: F-Locker-windows-portable.zip
