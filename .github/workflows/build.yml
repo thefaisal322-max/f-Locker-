@@ -26,21 +26,26 @@ jobs:
       - name: Create Android project files
         run: flutter create --org com.flocker --project-name f_locker --platforms=android .
       - name: Configure Android app
-        run: bash tool/configure_android.sh
+        shell: bash
+        run: |
+          ls -R android/app/src/main | head -40 > ci.log
+          bash tool/configure_android.sh >> ci.log 2>&1; code=$?; cat ci.log; exit $code
       - run: flutter pub get
       - name: Test encryption
         shell: bash
-        run: flutter test --reporter expanded 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
+        run: flutter test --reporter expanded 2>&1 | tee -a ci.log; exit ${PIPESTATUS[0]}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: test-log
-          path: test.log
+          name: ci-log
+          path: ci.log
       # One small APK per phone type instead of one big APK for all of them.
       - name: Build small APKs
-        run: >
-          flutter build apk --release --split-per-abi
-          --obfuscate --split-debug-info=build/symbols
+        shell: bash
+        run: |
+          flutter build apk --release --split-per-abi \
+            --obfuscate --split-debug-info=build/symbols 2>&1 | tee -a ci.log
+          exit ${PIPESTATUS[0]}
       - name: Name the APKs
         run: |
           cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk F-Locker.apk

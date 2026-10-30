@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Adjusts the Android project that `flutter create` generates.
-set -euo pipefail
+set -eux
 
 M=android/app/src/main/AndroidManifest.xml
 
@@ -20,8 +20,11 @@ grep -q 'MANAGE_EXTERNAL_STORAGE' "$M" || sed -i 's|<application|<uses-permissio
 # App name shown under the icon.
 sed -i 's|android:label="f_locker"|android:label="F-Locker"|' "$M"
 
-# Our MainActivity with the native helpers.
-TARGET=$(find android/app/src/main -name 'MainActivity.kt' | head -1)
+# Our MainActivity with the native helpers (replaces the generated one,
+# whether it was Kotlin or Java).
+find android/app/src/main -name 'MainActivity.*' -print -delete || true
+TARGET=android/app/src/main/kotlin/com/flocker/f_locker/MainActivity.kt
+mkdir -p "$(dirname "$TARGET")"
 cp tool/android/MainActivity.kt "$TARGET"
 
 cat "$M"
