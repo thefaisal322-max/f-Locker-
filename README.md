@@ -1,6 +1,6 @@
 # F-Locker
 
-An encrypted locker for **Android (.apk)** and **Windows (portable .exe, no install – like Rufus)**.
+An encrypted locker for **Android (.apk)** and **Windows (one F-Locker.exe, no install – like Rufus)**.
 
 ## Tabs
 
@@ -15,7 +15,9 @@ An encrypted locker for **Android (.apk)** and **Windows (portable .exe, no inst
 | 5 | Apps | App files such as `.apk` / `.exe` |
 | 6 | Zips | `.zip`, `.rar`, `.7z` … |
 
-In every content tab you **create a folder first**, then upload into it. There is **no limit** on items.
+In every content tab you **create a folder first**, then add files into it. There is **no limit** on items.
+
+**Files are moved, not copied:** once added, a file disappears from where it was and exists only inside F-Locker. From F-Locker you can **Restore** it (it goes back to the exact place it came from) or **Delete** it for good. On Android this needs "All files access", which F-Locker asks for the first time.
 
 ## Password and recovery key
 
@@ -32,12 +34,11 @@ In every content tab you **create a folder first**, then upload into it. There i
 
 ## Download
 
-Every push to `main` builds both apps in GitHub Actions (**Actions › latest run › Artifacts**):
+Every push to `main` builds and publishes a new release (**Releases › latest**):
 
-- `F-Locker-android` → `F-Locker.apk`
-- `F-Locker-windows-portable` → unzip and run `F-Locker.exe`
-
-Each successful build on `main` is also published under **Releases** (newest = latest).
+- `F-Locker.apk` – Android (64-bit phones, about 20 MB)
+- `F-Locker-old-phones.apk` – older 32-bit phones
+- `F-Locker.exe` – Windows, a single file. Double-click it anywhere (USB too). Your locked data sits next to it in a hidden `FLockerData` folder; the app itself unpacks hidden into `%LOCALAPPDATA%\F-Locker`.
 
 ## Build yourself
 
@@ -49,8 +50,7 @@ flutter build apk --release
 flutter build windows --release
 ```
 
-## Known limits (v1)
+## Known limits
 
-- Android keeps the original photo/video in the gallery after locking; delete it there yourself. (Windows deletes the original automatically – can be turned off in Settings.)
-- The Apps tab stores app files; it does not yet lock other installed apps from opening.
-- The Windows build is a portable folder (`F-Locker.exe` + DLLs), not yet a single file.
+- The Apps tab stores app files (`.apk`, `.exe`); it does not yet lock other installed apps from opening.
+- Opening a video or document decrypts a temporary copy (inside the hidden data folder) so the default player can play it; it is wiped when F-Locker locks.

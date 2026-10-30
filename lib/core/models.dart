@@ -105,7 +105,8 @@ class VItem {
       required this.folderId,
       required this.name,
       required this.size,
-      required this.added});
+      required this.added,
+      this.origin});
 
   final String id;
   final String folderId;
@@ -113,12 +114,17 @@ class VItem {
   final int size;
   final int added;
 
+  /// Where the file was before it was moved into F-Locker (null for files
+  /// that came through Transfer).
+  final String? origin;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'folderId': folderId,
         'name': name,
         'size': size,
-        'added': added
+        'added': added,
+        if (origin != null) 'origin': origin,
       };
 
   factory VItem.fromJson(Map<String, dynamic> j) => VItem(
@@ -127,5 +133,6 @@ class VItem {
         name: j['name'] as String,
         size: j['size'] as int,
         added: j['added'] as int,
+        origin: j['origin'] as String?,
       );
 }

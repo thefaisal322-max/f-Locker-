@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 
 import '../core/vault.dart';
@@ -72,21 +70,12 @@ class SettingsView extends StatelessWidget {
                 subtitle:
                     '${vault.items.length} items · ${formatBytes(vault.totalBytes)}',
               ),
-              if (Platform.isWindows)
-                _Row(
-                  title: 'Delete originals after locking',
-                  subtitle:
-                      'Removes the original file from this PC once it is safely locked',
-                  trailing: Switch(
-                      value: vault.deleteOriginals,
-                      onChanged: vault.setDeleteOriginals),
-                )
-              else
-                const _Row(
-                  title: 'Gallery originals',
-                  subtitle:
-                      'Android keeps the original in the gallery. Delete it there after locking.',
-                ),
+              const _Row(
+                title: 'Moving files',
+                subtitle:
+                    'Added files are moved into F-Locker and disappear from where they were. '
+                    'Restore puts them back in the same place.',
+              ),
             ]),
             const _Group('About', [
               _Row(

@@ -3,13 +3,17 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
+import '../core/device.dart';
 import '../core/models.dart';
 import '../core/vault.dart';
+import 'device_picker.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-/// Inside a folder: the locked items and the upload button.
+/// Inside a folder: the locked items, the upload (move in) button, and
+/// restore / delete for each item.
 class FolderScreen extends StatefulWidget {
   const FolderScreen({super.key, required this.vault, required this.folder});
   final Vault vault;
@@ -40,52 +44,89 @@ class _FolderScreenState extends State<FolderScreen> {
         VaultTab.videos => FileType.video,
         VaultTab.images => FileType.image,
         VaultTab.music => FileType.audio,
-        VaultTab.documents => FileType.any,
-        VaultTab.apps || VaultTab.zips =>
-          Platform.isAndroid ? FileType.any : FileType.custom,
+        _ => FileType.custom,
       };
 
-  Future<void> _upload() async {
+  /// Android needs "All files access" to move files out of the gallery and
+  /// folders, and to put them back.
+  Future<bool> _ensureAccess() async {
+    if (await Device.hasFileAccess()) return true;
+    if (!mounted) return false;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Allow file access'),
+        content: const Text(
+            'F-Locker moves files out of your gallery and folders, and puts them back '
+            'when you restore. For this Android needs "All files access".\n\n'
+            'On the next screen, turn it on for F-Locker, then come back.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Continue')),
+        ],
+      ),
+    );
+    if (go != true) return false;
+    final ok = await vault.withoutAutoLock(Device.requestFileAccess);
+    if (!ok && mounted) {
+      showSnack(context, 'F-Locker cannot move files without file access.');
+    }
+    return ok;
+  }
+
+  Future<List<String>> _pickPaths() async {
+    if (Platform.isAndroid) {
+      if (!await _ensureAccess() || !mounted) return [];
+      final r = await Navigator.of(context).push<List<String>>(
+          MaterialPageRoute(builder: (_) => DevicePicker(tab: folder.tab)));
+      return r ?? [];
+    }
     final type = _type;
-    FilePickerResult? r;
     try {
-      r = await vault.withoutAutoLock(() => FilePicker.platform.pickFiles(
+      final r = await vault.withoutAutoLock(() => FilePicker.platform.pickFiles(
           allowMultiple: true,
           type: type,
           allowedExtensions:
               type == FileType.custom ? folder.tab.extensions : null,
           lockParentWindow: true));
+      return r?.files.map((f) => f.path).whereType<String>().toList() ?? [];
     } catch (e) {
       if (mounted) showSnack(context, 'Could not open the files: $e');
-      return;
+      return [];
     }
-    final paths =
-        r?.files.map((f) => f.path).whereType<String>().toList() ?? <String>[];
+  }
+
+  Future<void> _upload() async {
+    final paths = await _pickPaths();
     if (paths.isEmpty || !mounted) return;
     setState(() {
       _busy = true;
-      _busyText = 'Locking';
+      _busyText = 'Moving in';
       _done = 0;
       _total = paths.length;
     });
-    final n = await vault.withoutAutoLock(() => vault.addFiles(folder, paths,
-        deleteSources: Platform.isWindows && vault.deleteOriginals,
+    final r = await vault.withoutAutoLock(() => vault.addFiles(folder, paths,
         onProgress: (d) {
       if (mounted) setState(() => _done = d);
     }));
-    if (Platform.isAndroid) {
-      try {
-        await FilePicker.platform.clearTemporaryFiles();
-      } catch (_) {}
-    }
+    await Device.mediaScan(r.moved);
     if (!mounted) return;
     setState(() => _busy = false);
+    final n = r.locked;
     final word = n == 1 ? 'file' : 'files';
-    showSnack(
-        context,
-        n == paths.length
-            ? 'Locked $n $word.'
-            : 'Locked $n of ${paths.length} files. Some could not be read.');
+    String msg;
+    if (n < paths.length) {
+      msg = 'Moved $n of ${paths.length} files. Some could not be read.';
+    } else if (r.moved.length < n) {
+      msg = 'Locked $n $word. ${n - r.moved.length} originals are in use and could not be removed.';
+    } else {
+      msg = 'Moved $n $word into F-Locker.';
+    }
+    showSnack(context, msg);
   }
 
   Future<void> _run(String text, Future<void> Function() job,
@@ -112,30 +153,45 @@ class _FolderScreenState extends State<FolderScreen> {
               vault: vault, items: all, initial: all.indexOf(it))));
       return;
     }
+    // Opens straight in the device's default player / app.
     await _run('Opening', () async {
       final path = await vault.decryptToTemp(it);
       await vault.withoutAutoLock(() => openExternal(path));
     });
   }
 
-  Future<void> _export(List<VItem> list, {required bool remove}) async {
+  /// Puts files back where they were before they were moved in.
+  Future<void> _restore(List<VItem> list) async {
     if (list.isEmpty) return;
-    final dir = await vault.withoutAutoLock(() => FilePicker.platform
-        .getDirectoryPath(
-            dialogTitle: 'Choose where to put the files',
-            lockParentWindow: true));
-    if (dir == null || !mounted) return;
-    var ok = 0;
-    await _run(remove ? 'Restoring' : 'Saving', () async {
+    if (Platform.isAndroid && !await _ensureAccess()) return;
+    String? fallback;
+    if (list.any((i) => i.origin == null)) {
+      if (Platform.isAndroid) {
+        fallback = p.join(await Device.storageRoot(), 'Download', 'F-Locker');
+      } else {
+        fallback = await vault.withoutAutoLock(() => FilePicker.platform
+            .getDirectoryPath(
+                dialogTitle:
+                    'Some files have no original place. Choose where to put them',
+                lockParentWindow: true));
+        if (fallback == null) return;
+      }
+    }
+    if (!mounted) return;
+    final restored = <String>[];
+    await _run('Restoring', () async {
       for (final it in list) {
-        await vault.exportItem(it, dir);
-        if (remove) await vault.deleteItems([it]);
-        ok++;
-        if (mounted) setState(() => _done = ok);
+        restored.add(await vault.restoreItem(it, fallback));
+        if (mounted) setState(() => _done = restored.length);
       }
     }, total: list.length);
-    if (mounted && ok > 0) {
-      showSnack(context, '$ok ${ok == 1 ? 'file' : 'files'} put in $dir');
+    await Device.mediaScan(restored);
+    if (mounted && restored.isNotEmpty) {
+      showSnack(
+          context,
+          restored.length == 1
+              ? 'Restored to ${restored.first}'
+              : 'Restored ${restored.length} files to their original place.');
     }
   }
 
@@ -143,7 +199,7 @@ class _FolderScreenState extends State<FolderScreen> {
     final ok = await askConfirm(context,
         title: 'Delete "${it.name}"?',
         message:
-            'It is removed from F-Locker for good. Restore it first if you want to keep a copy.');
+            'It is deleted for good and cannot be brought back. Use Restore if you want to keep it.');
     if (ok) await vault.deleteItems([it]);
   }
 
@@ -153,13 +209,19 @@ class _FolderScreenState extends State<FolderScreen> {
         title: 'Delete "${folder.name}"?',
         message: n == 0
             ? 'This empty folder will be removed.'
-            : 'This folder and the $n ${folder.tab.itemWord} in it are deleted for good.');
+            : 'This folder and the $n ${folder.tab.itemWord} in it are deleted for good. '
+                'Use "Restore everything" first if you want to keep them.');
     if (!ok) return;
     await vault.deleteFolder(folder);
     if (mounted) Navigator.of(context).pop();
   }
 
   void _itemSheet(VItem it, List<VItem> all) {
+    final where = it.origin != null
+        ? p.dirname(it.origin!)
+        : Platform.isAndroid
+            ? 'Download/F-Locker'
+            : 'a folder you choose';
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: C.surface,
@@ -173,25 +235,22 @@ class _FolderScreenState extends State<FolderScreen> {
             subtitle: Text('${formatBytes(it.size)} · ${formatDate(it.added)}'),
           ),
           ListTile(
-              leading: const Icon(Icons.open_in_new),
+              leading: const Icon(Icons.play_arrow_outlined),
               title: const Text('Open'),
               onTap: () {
                 Navigator.pop(ctx);
                 _open(it, all);
               }),
           ListTile(
-              leading: const Icon(Icons.copy_all_outlined),
-              title: const Text('Save a copy outside the locker'),
+              leading: const Icon(Icons.settings_backup_restore),
+              title: const Text('Restore to original place'),
+              subtitle: Text(where,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12, color: C.muted)),
               onTap: () {
                 Navigator.pop(ctx);
-                _export([it], remove: false);
-              }),
-          ListTile(
-              leading: const Icon(Icons.lock_open_outlined),
-              title: const Text('Restore (unlock and remove from locker)'),
-              onTap: () {
-                Navigator.pop(ctx);
-                _export([it], remove: true);
+                _restore([it]);
               }),
           ListTile(
               leading: const Icon(Icons.delete_outline, color: C.danger),
@@ -224,9 +283,8 @@ class _FolderScreenState extends State<FolderScreen> {
               actions: [
                 PopupMenuButton<String>(
                   tooltip: 'Folder options',
-                  onSelected: (v) => v == 'restore'
-                      ? _export(items, remove: true)
-                      : _deleteFolder(),
+                  onSelected: (v) =>
+                      v == 'restore' ? _restore(items) : _deleteFolder(),
                   itemBuilder: (_) => const [
                     PopupMenuItem(
                         value: 'restore', child: Text('Restore everything')),
@@ -248,7 +306,7 @@ class _FolderScreenState extends State<FolderScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                       child: Text(
-                          '${items.length} ${folder.tab.itemWord} · AES-256 encrypted · no limit',
+                          '${items.length} ${folder.tab.itemWord} · AES-256 encrypted · only in F-Locker',
                           style: const TextStyle(
                               fontSize: 13, color: C.accentText))),
                 ]),
@@ -292,7 +350,7 @@ class _FolderScreenState extends State<FolderScreen> {
                     child: FilledButton.icon(
                       onPressed: _busy ? null : _upload,
                       icon: const Icon(Icons.upload),
-                      label: Text('Upload ${folder.tab.itemWord}'),
+                      label: Text('Add ${folder.tab.itemWord}'),
                     ),
                   ),
                 ]),
@@ -311,8 +369,11 @@ class _FolderScreenState extends State<FolderScreen> {
             const Text('This folder is empty',
                 style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
             const SizedBox(height: 6),
-            Text('Tap Upload to lock ${folder.tab.itemWord} here.',
-                style: const TextStyle(color: C.muted)),
+            Text(
+                'Tap Add to move ${folder.tab.itemWord} here. They disappear from where they were '
+                'and you can restore them any time.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: C.muted, height: 1.5)),
           ]),
         ),
       );
@@ -399,7 +460,7 @@ class _FolderScreenState extends State<FolderScreen> {
                         ]),
                   ),
                   IconButton(
-                      tooltip: 'Options',
+                      tooltip: 'Restore or delete',
                       icon: const Icon(Icons.more_vert, color: C.muted2),
                       onPressed: () => _itemSheet(it, items)),
                 ]),

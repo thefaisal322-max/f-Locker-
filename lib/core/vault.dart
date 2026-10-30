@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import 'crypto.dart';
+import 'device.dart';
 import 'models.dart';
 
 /// Everything F-Locker keeps: settings, the encrypted index of folders and
@@ -55,16 +56,8 @@ class Vault extends ChangeNotifier {
     return (v is int && autoLockChoices.contains(v)) ? v : 1;
   }
 
-  bool get deleteOriginals => _settings['deleteOriginals'] as bool? ?? true;
-
   Future<void> setAutoLock(int minutes) async {
     _settings['autoLockMinutes'] = minutes;
-    await _saveConfig();
-    notifyListeners();
-  }
-
-  Future<void> setDeleteOriginals(bool v) async {
-    _settings['deleteOriginals'] = v;
     await _saveConfig();
     notifyListeners();
   }
@@ -94,13 +87,17 @@ class Vault extends ChangeNotifier {
 
   static Future<Directory> _resolveRoot() async {
     if (Platform.isWindows) {
-      final exeDir = File(Platform.resolvedExecutable).parent;
-      final d = Directory(p.join(exeDir.path, 'FLockerData'));
+      // FLOCKER_HOME is set by the single-file F-Locker.exe launcher to the
+      // folder it sits in, so the data stays next to the file you clicked.
+      final home = Platform.environment['FLOCKER_HOME'] ??
+          File(Platform.resolvedExecutable).parent.path;
+      final d = Directory(p.join(home, 'FLockerData'));
       try {
         await d.create(recursive: true);
         final probe = File(p.join(d.path, '.write-test'));
         await probe.writeAsString('ok');
         await probe.delete();
+        Device.hideOnWindows(d.path);
         return d;
       } catch (_) {
         // The folder is read-only (for example Program Files); fall back.
@@ -120,10 +117,7 @@ class Vault extends ChangeNotifier {
     _config = <String, dynamic>{
       'v': 1,
       'iterations': _iterations,
-      'settings': <String, dynamic>{
-        'autoLockMinutes': 1,
-        'deleteOriginals': true
-      },
+      'settings': <String, dynamic>{'autoLockMinutes': 1},
     };
     await _wrap(master, password, 'pw');
     await _wrap(master, rk, 'rk');
@@ -353,12 +347,15 @@ class Vault extends ChangeNotifier {
 
   // ---------------------------------------------------------------- items
 
-  /// Locks files into [folder]. There is no limit on how many.
-  /// Returns how many were locked.
-  Future<int> addFiles(VFolder folder, List<String> paths,
-      {bool deleteSources = false, void Function(int processed)? onProgress}) async {
-    var ok = 0;
+  /// Moves files into [folder]: each file is encrypted, then removed from
+  /// where it was. There is no limit on how many.
+  /// [moved] lists the original paths that were removed.
+  Future<({int locked, List<String> moved})> addFiles(
+      VFolder folder, List<String> paths,
+      {void Function(int processed)? onProgress}) async {
+    var locked = 0;
     var processed = 0;
+    final moved = <String>[];
     for (final path in paths) {
       if (!isUnlocked) break;
       final id = newId();
@@ -371,13 +368,15 @@ class Vault extends ChangeNotifier {
             folderId: folder.id,
             name: safeName(p.basename(path)),
             size: size,
-            added: DateTime.now().millisecondsSinceEpoch));
+            added: DateTime.now().millisecondsSinceEpoch,
+            origin: File(path).absolute.path));
         await _saveIndex();
-        ok++;
-        if (deleteSources) {
-          try {
-            await File(path).delete();
-          } catch (_) {}
+        locked++;
+        try {
+          await File(path).delete();
+          moved.add(path);
+        } catch (_) {
+          // In use or no permission: the file is locked but the original stays.
         }
       } catch (_) {
         await _deleteFile(out);
@@ -386,7 +385,7 @@ class Vault extends ChangeNotifier {
       onProgress?.call(processed);
       notifyListeners();
     }
-    return ok;
+    return (locked: locked, moved: moved);
   }
 
   /// Puts a file received through Transfer into "<tab> › Received".
@@ -432,9 +431,22 @@ class Vault extends ChangeNotifier {
     return out;
   }
 
-  Future<String> exportItem(VItem it, String dir) async {
-    final out = await _uniquePath(dir, safeName(it.name));
-    final part = '$out.part';
+  /// Takes a file out of F-Locker and puts it back where it came from
+  /// (or into [fallbackDir] if it has no original place). Returns the path.
+  Future<String> restoreItem(VItem it, String? fallbackDir) async {
+    final origin = it.origin;
+    final String target;
+    if (origin != null) {
+      target = origin;
+    } else if (fallbackDir != null) {
+      target = p.join(fallbackDir, safeName(it.name));
+    } else {
+      throw StateError('No place to restore "${it.name}" to');
+    }
+    final dir = p.dirname(target);
+    await Directory(dir).create(recursive: true);
+    final out = await _uniquePath(dir, p.basename(target));
+    final part = '$out.flpart';
     try {
       await decryptFileIsolate(blobPath(it.id), part, _master!);
       await File(part).rename(out);
@@ -442,6 +454,7 @@ class Vault extends ChangeNotifier {
       await _deleteFile(part);
       rethrow;
     }
+    await deleteItems([it]);
     return out;
   }
 

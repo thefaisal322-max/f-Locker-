@@ -3,7 +3,6 @@ name: Build F-Locker
 on:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -30,23 +29,30 @@ jobs:
         run: bash tool/configure_android.sh
       - run: flutter pub get
       - name: Test encryption
-        run: flutter test --reporter expanded 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
         shell: bash
+        run: flutter test --reporter expanded 2>&1 | tee test.log; exit ${PIPESTATUS[0]}
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: test-log
           path: test.log
-      - name: Build APK
-        run: flutter build apk --release
-      - run: cp build/app/outputs/flutter-apk/app-release.apk F-Locker.apk
+      # One small APK per phone type instead of one big APK for all of them.
+      - name: Build small APKs
+        run: >
+          flutter build apk --release --split-per-abi
+          --obfuscate --split-debug-info=build/symbols
+      - name: Name the APKs
+        run: |
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk F-Locker.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk F-Locker-old-phones.apk
+          ls -lh F-Locker*.apk
       - uses: actions/upload-artifact@v4
         with:
           name: F-Locker-android
-          path: F-Locker.apk
+          path: F-Locker*.apk
 
   windows:
-    name: Windows (portable .exe)
+    name: Windows (single F-Locker.exe)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,24 +66,32 @@ jobs:
         shell: pwsh
         run: ./tool/configure_windows.ps1
       - run: flutter pub get
-      - name: Build EXE
-        run: flutter build windows --release
-      - name: Package portable folder
+      - name: Build app
+        run: flutter build windows --release --obfuscate --split-debug-info=build/symbols
+      - name: Pack everything into one F-Locker.exe
         shell: pwsh
         run: |
-          $out = "F-Locker"
-          Copy-Item -Recurse build/windows/x64/runner/Release $out
-          # Bundle the C++ runtime so F-Locker runs on any PC without installing anything.
+          $app = "app"
+          Copy-Item -Recurse build/windows/x64/runner/Release $app
+          # C++ runtime, so it runs on any PC without installing anything.
           foreach ($dll in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
             $src = Join-Path $env:WINDIR "System32\$dll"
-            if (Test-Path $src) { Copy-Item $src $out }
+            if (Test-Path $src) { Copy-Item $src $app }
           }
-          Copy-Item README-portable.txt "$out\README.txt"
-          Compress-Archive -Path "$out\*" -DestinationPath F-Locker-windows-portable.zip
+          Compress-Archive -Path "$app\*" -DestinationPath app.zip -CompressionLevel Optimal
+          (Get-FileHash app.zip -Algorithm SHA256).Hash.Substring(0, 16) | Set-Content -NoNewline version.txt
+          $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          & $csc /nologo /target:winexe /optimize+ /out:F-Locker.exe `
+            /win32icon:windows\runner\resources\app_icon.ico `
+            /resource:app.zip,app.zip /resource:version.txt,version.txt `
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /r:System.Windows.Forms.dll `
+            tool\launcher\Launcher.cs
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Item F-Locker.exe | Format-List Name, Length
       - uses: actions/upload-artifact@v4
         with:
-          name: F-Locker-windows-portable
-          path: F-Locker-windows-portable.zip
+          name: F-Locker-windows
+          path: F-Locker.exe
 
   release:
     name: Publish download links
@@ -91,13 +105,17 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: F-Locker 1.0.${{ github.run_number }}
+          tag_name: v1.1.${{ github.run_number }}
+          name: F-Locker 1.1.${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
-            - **F-Locker.apk** - install on Android (allow "install unknown apps").
-            - **F-Locker-windows-portable.zip** - unzip anywhere (USB too) and run F-Locker.exe. Nothing to install.
+            - **F-Locker.apk** - Android phones (almost all phones from the last years).
+            - **F-Locker-old-phones.apk** - only if F-Locker.apk does not install (older 32-bit phones).
+            - **F-Locker.exe** - Windows. One file, nothing to install. Put it anywhere (USB too) and double-click.
+
+            Files you add are moved into F-Locker. Use Restore to put them back where they were.
           files: |
             dist/F-Locker.apk
-            dist/F-Locker-windows-portable.zip
+            dist/F-Locker-old-phones.apk
+            dist/F-Locker.exe
