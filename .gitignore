@@ -9,12 +9,12 @@ build/
 pubspec.lock
 
 # Platform folders are generated in CI by `flutter create`
-android/
-windows/
-ios/
-linux/
-macos/
-web/
+/android/
+/windows/
+/ios/
+/linux/
+/macos/
+/web/
 
 # IDE
 .idea/
