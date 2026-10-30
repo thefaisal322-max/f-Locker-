@@ -27,18 +27,11 @@ jobs:
         run: flutter create --org com.flocker --project-name f_locker --platforms=android .
       - name: Configure Android app
         shell: bash
-        run: |
-          ls -R android/app/src/main | head -40 > ci.log
-          bash tool/configure_android.sh >> ci.log 2>&1; code=$?; cat ci.log; exit $code
+        run: python3 tool/configure_android.py 2>&1 | tee ci.log; exit ${PIPESTATUS[0]}
       - run: flutter pub get
       - name: Test encryption
         shell: bash
         run: flutter test --reporter expanded 2>&1 | tee -a ci.log; exit ${PIPESTATUS[0]}
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-log
-          path: ci.log
       # One small APK per phone type instead of one big APK for all of them.
       - name: Build small APKs
         shell: bash
@@ -55,6 +48,13 @@ jobs:
         with:
           name: F-Locker-android
           path: F-Locker*.apk
+      - name: Show errors
+        if: failure()
+        shell: bash
+        run: |
+          touch ci.log
+          grep -iE "error|exception|failed|what went wrong|unresolved|\.kt:|\.dart:" ci.log | tail -25 | while IFS= read -r line; do echo "::error::$line"; done
+          tail -15 ci.log | while IFS= read -r line; do echo "::error::$line"; done
 
   windows:
     name: Windows (single F-Locker.exe)

@@ -44,7 +44,7 @@ Every push to `main` builds and publishes a new release (**Releases › latest**
 
 ```bash
 flutter create --org com.flocker --project-name f_locker --platforms=android,windows .
-bash tool/configure_android.sh      # Android tweaks
+python3 tool/configure_android.py   # Android tweaks
 pwsh tool/configure_windows.ps1     # Windows tweaks (on Windows)
 flutter build apk --release
 flutter build windows --release
